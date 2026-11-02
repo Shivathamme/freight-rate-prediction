@@ -1,10 +1,12 @@
 
 from pathlib import Path
 from datetime import date
-
-import streamlit as st
-import pandas as pd
+import lzma
+import shutil
+import tempfile
 import joblib
+import pandas as pd
+import streamlit as st
 
 
 # --------------------------------------------------
@@ -18,7 +20,9 @@ st.set_page_config(
 )
 
 BASE_DIR = Path(__file__).resolve().parent
-MODEL_PATH = BASE_DIR / "freight_rate_model.pkl"
+
+# Exact compressed filename uploaded to GitHub
+COMPRESSED_MODEL_PATH = BASE_DIR / "freight_rate_model .pkl"
 
 DEFAULT_FEATURES = [
     "pickup",
@@ -34,68 +38,119 @@ DEFAULT_FEATURES = [
 
 
 # --------------------------------------------------
-# 2. Load trained model
+# 2. Load and extract model
 # --------------------------------------------------
 
 @st.cache_resource
 def load_model():
 
-    if not MODEL_PATH.exists():
+    if not COMPRESSED_MODEL_PATH.is_file():
         raise FileNotFoundError(
-            f"Model file not found: {MODEL_PATH}"
+            f"Compressed model not found: {COMPRESSED_MODEL_PATH}. "
+            "Check the filename in your GitHub repository."
         )
 
-    artifact = joblib.load(MODEL_PATH)
+    temp_model_path = None
 
-    # Support a dictionary containing model and features
-    if isinstance(artifact, dict):
-        model = artifact.get("model", artifact.get("final_model"))
-        features = artifact.get("features", DEFAULT_FEATURES)
+    try:
+        # Extract compressed model into a temporary file
+        with tempfile.NamedTemporaryFile(
+            suffix=".pkl",
+            delete=False
+        ) as temp_file:
+            temp_model_path = Path(temp_file.name)
 
-    # Support a tuple/list containing model and features
-    elif isinstance(artifact, (tuple, list)):
-        model = artifact[0]
-        features = (
-            artifact[1]
-            if len(artifact) > 1
-            else DEFAULT_FEATURES
-        )
+        with lzma.open(
+            COMPRESSED_MODEL_PATH,
+            "rb"
+        ) as compressed_file:
 
-    # Support a model saved directly using joblib.dump(final_model, ...)
-    else:
-        model = artifact
-        features = DEFAULT_FEATURES
+            with open(temp_model_path, "wb") as output_file:
+                shutil.copyfileobj(
+                    compressed_file,
+                    output_file
+                )
 
-    if model is None:
-        raise ValueError("The saved model artifact does not contain a model.")
+        # Load extracted Joblib artifact
+        artifact = joblib.load(temp_model_path)
 
-    return model, list(features)
+        # Support different saved artifact formats
+        if isinstance(artifact, dict):
 
+            model = artifact.get(
+                "model",
+                artifact.get("final_model")
+            )
+
+            features = artifact.get(
+                "features",
+                DEFAULT_FEATURES
+            )
+
+        elif isinstance(artifact, (tuple, list)):
+
+            model = artifact[0]
+
+            features = (
+                artifact[1]
+                if len(artifact) > 1
+                else DEFAULT_FEATURES
+            )
+
+        else:
+
+            model = artifact
+            features = DEFAULT_FEATURES
+
+        if model is None:
+            raise ValueError(
+                "No trained model was found in the artifact."
+            )
+
+        return model, list(features)
+
+    finally:
+        # Remove temporary extracted file
+        if temp_model_path and temp_model_path.exists():
+            temp_model_path.unlink()
+
+
+# --------------------------------------------------
+# 3. Load model safely
+# --------------------------------------------------
 
 try:
+
     model, features = load_model()
 
 except Exception as error:
-    st.error(f"Unable to load the model: {error}")
+
+    st.error("Unable to load the model.")
+
+    st.code(
+        f"Error type: {type(error).__name__}\n"
+        f"Error details: {repr(error)}"
+    )
+
     st.stop()
 
 
 # --------------------------------------------------
-# 3. Application heading
+# 4. Application heading
 # --------------------------------------------------
 
 st.title("🚚 Freight Rate Prediction")
 
 st.write(
-    "Estimate freight transportation rates using "
-    "a Machine Learning model."
+    "Predict freight transportation rates using "
+    "a trained Random Forest Machine Learning model."
 )
 
 st.divider()
 
 
 # --------------------------------------------------
-# 4. Input form
+# 5. Input form
 # --------------------------------------------------
 
 st.subheader("Enter Load Details")
@@ -143,13 +198,16 @@ with st.form("freight_prediction_form"):
 
 
 # --------------------------------------------------
-# 5. Prediction
+# 6. Make prediction
 # --------------------------------------------------
 
 if submitted:
 
     if not pickup.strip() or not delivery.strip():
-        st.warning("Please enter both pickup and delivery locations.")
+
+        st.warning(
+            "Please enter both pickup and delivery locations."
+        )
 
     else:
 
@@ -166,16 +224,25 @@ if submitted:
         }])
 
         try:
-            # Keep the same feature order used during training
+
+            # Match training feature order
             input_data = input_data[features]
 
-            prediction = model.predict(input_data)[0]
+            prediction = float(
+                model.predict(input_data)[0]
+            )
 
-            if pd.isna(prediction) or prediction <= 0:
-                st.error("The model returned an invalid prediction.")
+            if not pd.notna(prediction) or prediction <= 0:
+
+                st.error(
+                    "The model returned an invalid prediction."
+                )
 
             else:
-                st.success("Prediction completed successfully!")
+
+                st.success(
+                    "Prediction completed successfully!"
+                )
 
                 st.metric(
                     label="Predicted Freight Rate",
@@ -183,21 +250,27 @@ if submitted:
                 )
 
                 st.caption(
-                    "This is an estimated rate generated by "
-                    "your trained Random Forest model."
+                    "This is an estimated freight rate "
+                    "generated by your trained model."
                 )
 
         except Exception as error:
-            st.error(f"Prediction failed: {error}")
+
+            st.error("Prediction failed.")
+
+            st.code(
+                f"{type(error).__name__}: {repr(error)}"
+            )
 
 
 # --------------------------------------------------
-# 6. Footer
+# 7. Footer
 # --------------------------------------------------
 
 st.divider()
 
 st.caption(
-    "Freight Rate Prediction | Machine Learning Project | "
-    "Random Forest Regressor"
+    "Freight Rate Prediction | "
+    "Random Forest Regressor | "
+    "Machine Learning Project"
 )
