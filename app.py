@@ -1,66 +1,203 @@
 
-import streamlit as st
-import joblib
-import pandas as pd
+from pathlib import Path
 from datetime import date
 
-# Load the trained model and feature names
-@st.cache_resource
-def load_model():
-    artifact = joblib.load("freight_rate_model.pkl")
-    return artifact["model"], artifact["features"]
+import streamlit as st
+import pandas as pd
+import joblib
 
-model, features = load_model()
+
+# --------------------------------------------------
+# 1. Page configuration
+# --------------------------------------------------
 
 st.set_page_config(
-    page_title="Freight Rate Predictor",
+    page_title="Freight Rate Prediction",
     page_icon="🚚",
     layout="centered"
 )
 
+BASE_DIR = Path(__file__).resolve().parent
+MODEL_PATH = BASE_DIR / "freight_rate_model.pkl"
+
+DEFAULT_FEATURES = [
+    "pickup",
+    "delivery",
+    "distance",
+    "equipment",
+    "weight",
+    "year",
+    "month_num",
+    "day",
+    "day_of_week"
+]
+
+
+# --------------------------------------------------
+# 2. Load trained model
+# --------------------------------------------------
+
+@st.cache_resource
+def load_model():
+
+    if not MODEL_PATH.exists():
+        raise FileNotFoundError(
+            f"Model file not found: {MODEL_PATH}"
+        )
+
+    artifact = joblib.load(MODEL_PATH)
+
+    # Support a dictionary containing model and features
+    if isinstance(artifact, dict):
+        model = artifact.get("model", artifact.get("final_model"))
+        features = artifact.get("features", DEFAULT_FEATURES)
+
+    # Support a tuple/list containing model and features
+    elif isinstance(artifact, (tuple, list)):
+        model = artifact[0]
+        features = (
+            artifact[1]
+            if len(artifact) > 1
+            else DEFAULT_FEATURES
+        )
+
+    # Support a model saved directly using joblib.dump(final_model, ...)
+    else:
+        model = artifact
+        features = DEFAULT_FEATURES
+
+    if model is None:
+        raise ValueError("The saved model artifact does not contain a model.")
+
+    return model, list(features)
+
+
+try:
+    model, features = load_model()
+
+except Exception as error:
+    st.error(f"Unable to load the model: {error}")
+    st.stop()
+
+
+# --------------------------------------------------
+# 3. Application heading
+# --------------------------------------------------
+
 st.title("🚚 Freight Rate Prediction")
+
 st.write(
-    "Enter shipment details to estimate the freight rate "
-    "using the trained Machine Learning model."
+    "Estimate freight transportation rates using "
+    "a Machine Learning model."
 )
 
-with st.form("freight_form"):
-    pickup = st.text_input("Pickup city", value="Lexington")
-    delivery = st.text_input("Delivery city", value="Fort Wayne")
-    distance = st.number_input(
-        "Distance (miles)", min_value=1, value=360
+st.divider()
+
+
+# --------------------------------------------------
+# 4. Input form
+# --------------------------------------------------
+
+st.subheader("Enter Load Details")
+
+with st.form("freight_prediction_form"):
+
+    pickup = st.text_input(
+        "Pickup Location",
+        placeholder="Example: Lexington"
     )
+
+    delivery = st.text_input(
+        "Delivery Location",
+        placeholder="Example: Fort Wayne"
+    )
+
+    distance = st.number_input(
+        "Distance (miles)",
+        min_value=1,
+        max_value=10000,
+        value=360
+    )
+
     equipment = st.selectbox(
-        "Equipment",
+        "Equipment Type",
         ["Dry Van", "Reefer", "Flatbed"]
     )
+
     weight = st.number_input(
-        "Weight (lbs)", min_value=1, value=32000
-    )
-    shipment_date = st.date_input(
-        "Shipment date", value=date(2025, 12, 1)
+        "Load Weight (lbs)",
+        min_value=1,
+        max_value=100000,
+        value=32000
     )
 
-    submitted = st.form_submit_button("Predict Freight Rate")
+    selected_date = st.date_input(
+        "Pickup Date",
+        value=date.today()
+    )
+
+    submitted = st.form_submit_button(
+        "Predict Freight Rate",
+        use_container_width=True
+    )
+
+
+# --------------------------------------------------
+# 5. Prediction
+# --------------------------------------------------
 
 if submitted:
-    input_data = pd.DataFrame([{
-        "pickup": pickup,
-        "delivery": delivery,
-        "distance": distance,
-        "equipment": equipment,
-        "weight": weight,
-        "year": shipment_date.year,
-        "month_num": shipment_date.month,
-        "day": shipment_date.day,
-        "day_of_week": shipment_date.weekday()
-    }])
 
-    # Match the feature order used during training
-    input_data = input_data[features]
-    prediction = float(model.predict(input_data)[0])
+    if not pickup.strip() or not delivery.strip():
+        st.warning("Please enter both pickup and delivery locations.")
 
-    st.success(f"Predicted freight rate: ${prediction:,.2f}")
-    st.caption(
-        "This is a model estimate, not a guaranteed market quote."
-    )
+    else:
+
+        input_data = pd.DataFrame([{
+            "pickup": pickup.strip(),
+            "delivery": delivery.strip(),
+            "distance": distance,
+            "equipment": equipment,
+            "weight": weight,
+            "year": selected_date.year,
+            "month_num": selected_date.month,
+            "day": selected_date.day,
+            "day_of_week": selected_date.weekday()
+        }])
+
+        try:
+            # Keep the same feature order used during training
+            input_data = input_data[features]
+
+            prediction = model.predict(input_data)[0]
+
+            if pd.isna(prediction) or prediction <= 0:
+                st.error("The model returned an invalid prediction.")
+
+            else:
+                st.success("Prediction completed successfully!")
+
+                st.metric(
+                    label="Predicted Freight Rate",
+                    value=f"${prediction:,.2f}"
+                )
+
+                st.caption(
+                    "This is an estimated rate generated by "
+                    "your trained Random Forest model."
+                )
+
+        except Exception as error:
+            st.error(f"Prediction failed: {error}")
+
+
+# --------------------------------------------------
+# 6. Footer
+# --------------------------------------------------
+
+st.divider()
+
+st.caption(
+    "Freight Rate Prediction | Machine Learning Project | "
+    "Random Forest Regressor"
+)
